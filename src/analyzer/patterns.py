@@ -255,7 +255,47 @@ SECTION_INDICATOR_WORDS = [
 
 # ── Indicadores de fornecedor ─────────────────────────────────────────────────
 FORNECEDOR_HINTS = [
-    # Words that often precede a supplier name
     'exec.', 'executante:', 'fornecedor:', 'responsável:', 'empresa:',
     'por:', 'feito por', 'produzido por', 'fornecido por',
 ]
+
+# ── Fornecedores conhecidos (detectados automaticamente no texto) ─────────────
+# Chave = nome canônico que aparece na aba. Valores = variações para buscar.
+KNOWN_SUPPLIERS: dict[str, list[str]] = {
+    'Guedes Cenografia': [
+        'guedes cenografia', 'guedes', 'gc cenografia', 'gc ceno',
+    ],
+    'MGTT': [
+        'mgtt',
+    ],
+    'Ricardo': [
+        'ricardo figurino', 'ricardo figurinista', 'ricardo',
+    ],
+    'Mercado Livre': [
+        'mercado livre', 'ml ', 'shopee', 'amazon',
+    ],
+    'MEMORIAH': [
+        'memoriah',
+    ],
+    'Babalu': [
+        'babalu',
+    ],
+    'FMEF': [
+        'fmef',
+    ],
+    'Total Eventos': [
+        'total eventos',
+    ],
+    'ClassTransfer': [
+        'classtransfer', 'class transfer',
+    ],
+    'Mercadão dos Puffs': [
+        'mercadão dos puffs', 'mercadao dos puffs', 'puffs',
+    ],
+    'Playlock': [
+        'playlock',
+    ],
+    'Águia Infra': [
+        'águia infra', 'aguia infra',
+    ],
+}

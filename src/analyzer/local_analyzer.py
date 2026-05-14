@@ -14,7 +14,7 @@ from .patterns import (
     COLOR_KEYWORDS, ACABAMENTO_KEYWORDS, TIPO_PRODUCAO_MAP,
     STATUS_ARTE_KEYWORDS, STATUS_COMPRA_KEYWORDS, PENDENCIA_KEYWORDS,
     NIVEL_ALTO_KEYWORDS, NIVEL_MEDIO_KEYWORDS, TABLE_HEADER_SYNONYMS,
-    SECTION_INDICATOR_WORDS,
+    SECTION_INDICATOR_WORDS, KNOWN_SUPPLIERS,
 )
 
 
@@ -374,13 +374,19 @@ class _DocumentAnalyzer:
         tl = _norm(text)
         result: dict = {}
 
-        # Supplier — look for explicit "Fornecedor: X" / "exec.: X" patterns
+        # Supplier — explicit "Fornecedor: X" / "exec.: X" label takes priority
         forn_m = re.search(
             r'(?:fornecedor|exec\.?|executante|responsável|empresa)\s*[:\-]\s*([^|\n,;—]{3,50})',
             text, re.IGNORECASE,
         )
         if forn_m:
             result['fornecedor'] = forn_m.group(1).strip().rstrip('.')
+        else:
+            # Scan for known supplier names in the text
+            for canonical, variants in KNOWN_SUPPLIERS.items():
+                if any(re.search(r'(?<!\w)' + re.escape(v) + r'(?!\w)', tl) for v in variants):
+                    result['fornecedor'] = canonical
+                    break
 
         # Category
         for category, keywords in CATEGORY_MAP.items():
