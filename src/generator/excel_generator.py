@@ -1,70 +1,91 @@
 """
 Excel generator for decupagem output.
-Creates a formatted .xlsx with 6 sheets: Resumo, Itens Detalhados,
-Por Seção, Medições, Pendências, Legenda/Status.
+Produces a formatted .xlsx with:
+  1. Resumo
+  2. Itens Detalhados  (28 colunas A-AB, idêntico à referência)
+  3. Por Seção         (linhas por item, agrupadas por seção)
+  4. Medições          (uma linha por dimensão)
+  5. Pendências        (colunas alinhadas à referência)
+  6. Legenda e Status
+  7+. Uma aba por fornecedor  (ao final, ordenadas)
 """
+from __future__ import annotations
+
+import re
 import io
 from openpyxl import Workbook
-from openpyxl.styles import (
-    Font, Fill, PatternFill, Alignment, Border, Side, GradientFill
-)
-from openpyxl.styles.numbers import FORMAT_TEXT
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.table import Table, TableStyleInfo
-from openpyxl.worksheet.filters import AutoFilter
-from openpyxl.formatting.rule import (
-    CellIsRule, FormulaRule, ColorScaleRule, DataBarRule
-)
 
 
-# ── Palette ──────────────────────────────────────────────────────────────────
-COL_HEADER_BG    = "1F3864"   # dark navy  – headers
-COL_HEADER_FG    = "FFFFFF"
-COL_SECTION_BG   = "2E75B6"   # blue       – section rows
-COL_SECTION_FG   = "FFFFFF"
-COL_ALT_ROW      = "DCE6F1"   # light blue – alternate rows
-COL_ALTO         = "FF6B6B"   # red-ish    – nivel_atencao Alto
-COL_MEDIO        = "FFD93D"   # yellow     – nivel_atencao Médio
-COL_BAIXO        = "6BCB77"   # green      – nivel_atencao Baixo
-COL_PENDENCIA    = "FFA07A"   # salmon     – pendencias
-COL_APROVADO     = "90EE90"   # light green– aprovado
-COL_RESUMO_LABEL = "E8F0FE"
-COL_BORDER       = "BDC3C7"
+# ── Palette ───────────────────────────────────────────────────────────────────
+_NAV   = "1F3864"   # cabeçalho principal (azul marinho)
+_BLU   = "2E75B6"   # sub-cabeçalho
+_ALT   = "DCE6F1"   # linha alternada
+_ALTO  = "FF6B6B"   # nível alto
+_MEDIO = "FFD93D"   # nível médio
+_BAIXO = "6BCB77"   # nível baixo
+_CRIT  = "C0392B"   # crítico
+_RES   = "E8F0FE"   # rótulo resumo
+_WHITE = "FFFFFF"
+_GRAY  = "F2F2F2"
+_BORD  = "BDC3C7"
+
+NIVEL_FILL = {
+    "alto":   _ALTO,
+    "médio":  _MEDIO,
+    "medio":  _MEDIO,
+    "baixo":  _BAIXO,
+    "crítico":_CRIT,
+    "critico":_CRIT,
+}
+
+NIVEL_ROW_FILL = {
+    "alto":   "FFF0F0",
+    "crítico":"FFE0E0",
+    "critico":"FFE0E0",
+}
 
 
 def _solid(hex_color: str) -> PatternFill:
     return PatternFill(fill_type="solid", fgColor=hex_color)
 
 
-def _border(style="thin"):
-    s = Side(style=style, color=COL_BORDER)
+def _border(color=_BORD, style="thin") -> Border:
+    s = Side(style=style, color=color)
     return Border(left=s, right=s, top=s, bottom=s)
 
 
-def _header_font(bold=True, size=10, color=COL_HEADER_FG):
-    return Font(name="Calibri", bold=bold, size=size, color=color)
+def _font(bold=False, size=9, color="000000", name="Calibri") -> Font:
+    return Font(name=name, bold=bold, size=size, color=color)
 
 
-def _body_font(bold=False, size=9, color="000000"):
-    return Font(name="Calibri", bold=bold, size=size, color=color)
+def _align(h="left", v="top", wrap=True) -> Alignment:
+    return Alignment(horizontal=h, vertical=v, wrap_text=wrap)
 
 
-def _wrap_align(horizontal="left", vertical="top"):
-    return Alignment(horizontal=horizontal, vertical=vertical, wrap_text=True)
+def _hdr_cell(ws, row: int, col: int, value: str,
+              bg=_NAV, fg=_WHITE, size=10, bold=True, h="center"):
+    cell = ws.cell(row=row, column=col, value=value)
+    cell.font      = Font(name="Calibri", bold=bold, size=size, color=fg)
+    cell.fill      = _solid(bg)
+    cell.alignment = Alignment(horizontal=h, vertical="center", wrap_text=True)
+    cell.border    = _border()
+    return cell
 
 
-def _apply_header_row(ws, headers: list[str], row=1,
-                      bg=COL_HEADER_BG, fg=COL_HEADER_FG, height=22):
-    ws.row_dimensions[row].height = height
-    for col_idx, header in enumerate(headers, start=1):
-        cell = ws.cell(row=row, column=col_idx, value=header)
-        cell.font = Font(name="Calibri", bold=True, size=10, color=fg)
+def _data_cell(ws, row: int, col: int, value,
+               bg=None, h="left", bold=False, size=9):
+    cell = ws.cell(row=row, column=col, value=str(value) if value is not None else "")
+    cell.font      = _font(bold=bold, size=size)
+    cell.alignment = _align(h=h)
+    cell.border    = _border()
+    if bg:
         cell.fill = _solid(bg)
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        cell.border = _border()
+    return cell
 
 
-def _set_col_widths(ws, widths: dict[int, float]):
+def _set_widths(ws, widths: dict[int, float]):
     for col, w in widths.items():
         ws.column_dimensions[get_column_letter(col)].width = w
 
@@ -73,132 +94,111 @@ def _freeze(ws, cell="A2"):
     ws.freeze_panes = cell
 
 
-def _autofilter(ws, first_row=1):
+def _autofilter(ws, row=1):
     ws.auto_filter.ref = ws.dimensions
 
 
-def _add_table(ws, name: str, ref: str, style="TableStyleMedium9"):
-    table = Table(displayName=name, ref=ref)
-    table.tableStyleInfo = TableStyleInfo(
-        name=style,
-        showFirstColumn=False,
-        showLastColumn=False,
-        showRowStripes=True,
-        showColumnStripes=False,
-    )
-    ws.add_table(table)
+def _row_height(ws, row: int, h: float):
+    ws.row_dimensions[row].height = h
 
 
-def _color_row(ws, row: int, n_cols: int, hex_color: str):
-    for col in range(1, n_cols + 1):
-        ws.cell(row=row, column=col).fill = _solid(hex_color)
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. RESUMO
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-# ── Sheet: Resumo ─────────────────────────────────────────────────────────────
-def _build_resumo(ws, resumo: dict, filename: str):
+def _build_resumo(ws, data: dict, filename: str):
     ws.sheet_view.showGridLines = False
 
-    # Title
-    ws.merge_cells("A1:D1")
-    cell = ws["A1"]
-    cell.value = "DECUPAGEM TÉCNICA — RESUMO DO PROJETO"
-    cell.font = Font(name="Calibri", bold=True, size=14, color=COL_HEADER_FG)
-    cell.fill = _solid(COL_HEADER_BG)
-    cell.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 30
+    resumo = data.get("resumo", {})
+    n_med  = len(data.get("medicoes", []))
+    n_pend = len(data.get("pendencias", []))
 
-    pairs = [
-        ("Arquivo analisado", filename),
-        ("Cliente", resumo.get("cliente", "Não informado")),
-        ("Projeto", resumo.get("projeto", "Não informado")),
-        ("Total de páginas/slides", resumo.get("total_paginas_slides", "Não informado")),
-        ("Total de itens extraídos", resumo.get("total_itens", "Não informado")),
-        ("Observações gerais", resumo.get("observacoes_gerais", "")),
+    # ── Título ────────────────────────────────────────────────────────────────
+    ws.merge_cells("A1:B1")
+    t = ws["A1"]
+    t.value = "DECUPAGEM TÉCNICA — RESUMO DO PROJETO"
+    t.font  = Font(name="Calibri", bold=True, size=14, color=_WHITE)
+    t.fill  = _solid(_NAV)
+    t.alignment = Alignment(horizontal="center", vertical="center")
+    _row_height(ws, 1, 32)
+
+    ws.merge_cells("D1:F1")
+    t2 = ws["D1"]
+    t2.value = "DISTRIBUIÇÃO DE ITENS"
+    t2.font  = Font(name="Calibri", bold=True, size=11, color=_WHITE)
+    t2.fill  = _solid(_NAV)
+    t2.alignment = Alignment(horizontal="center", vertical="center")
+
+    # ── Dados principais (A–B) ────────────────────────────────────────────────
+    fields = [
+        ("Campo", "Valor"),  # header
+        ("Cliente",                    resumo.get("cliente", "Não informado")),
+        ("Projeto",                    resumo.get("projeto", "Não informado")),
+        ("Número total de páginas/slides analisados",
+                                       resumo.get("total_paginas_slides", "Não informado")),
+        ("Quantidade total de itens",  resumo.get("total_itens", 0)),
+        ("Quantidade total de medições", n_med),
+        ("Quantidade total de pendências/ações", n_pend),
+        ("Observações gerais",         resumo.get("observacoes_gerais", "")),
     ]
 
-    row = 3
-    for label, value in pairs:
-        ws.cell(row=row, column=1, value=label).font = Font(name="Calibri", bold=True, size=10, color="1F3864")
-        ws.cell(row=row, column=1).fill = _solid(COL_RESUMO_LABEL)
-        ws.cell(row=row, column=1).border = _border()
-        val_cell = ws.cell(row=row, column=2, value=str(value))
-        val_cell.font = _body_font(size=10)
-        val_cell.alignment = _wrap_align()
-        val_cell.border = _border()
-        ws.row_dimensions[row].height = 18
-        row += 1
+    for r_idx, (campo, valor) in enumerate(fields, start=1):
+        row = r_idx + 1
+        is_header = r_idx == 1
+        bg_a = _BLU if is_header else _RES
+        fg_a = _WHITE if is_header else _NAV
 
-    # Seções
-    row += 1
-    ws.cell(row=row, column=1, value="ITENS POR SEÇÃO").font = Font(name="Calibri", bold=True, size=10, color=COL_HEADER_FG)
-    ws.cell(row=row, column=1).fill = _solid(COL_SECTION_BG)
-    ws.cell(row=row, column=2).fill = _solid(COL_SECTION_BG)
-    ws.merge_cells(f"A{row}:B{row}")
-    row += 1
-    _apply_header_row(ws, ["Seção", "Qtd. Itens"], row=row, bg="2E75B6")
-    row += 1
-    for secao in resumo.get("secoes", []):
-        ws.cell(row=row, column=1, value=secao.get("nome", "")).font = _body_font()
-        ws.cell(row=row, column=1).border = _border()
-        ws.cell(row=row, column=2, value=secao.get("quantidade_itens", 0)).font = _body_font()
-        ws.cell(row=row, column=2).alignment = Alignment(horizontal="center")
-        ws.cell(row=row, column=2).border = _border()
-        if row % 2 == 0:
-            ws.cell(row=row, column=1).fill = _solid(COL_ALT_ROW)
-            ws.cell(row=row, column=2).fill = _solid(COL_ALT_ROW)
-        row += 1
+        ca = ws.cell(row=row, column=1, value=campo)
+        ca.font      = Font(name="Calibri", bold=True, size=9 if not is_header else 10, color=fg_a)
+        ca.fill      = _solid(bg_a)
+        ca.alignment = _align(h="left" if not is_header else "center", v="center")
+        ca.border    = _border()
 
-    # Fornecedores
-    row += 1
-    ws.cell(row=row, column=1, value="ITENS POR FORNECEDOR").font = Font(name="Calibri", bold=True, size=10, color=COL_HEADER_FG)
-    ws.cell(row=row, column=1).fill = _solid(COL_SECTION_BG)
-    ws.cell(row=row, column=2).fill = _solid(COL_SECTION_BG)
-    ws.merge_cells(f"A{row}:B{row}")
-    row += 1
-    _apply_header_row(ws, ["Fornecedor", "Qtd. Itens"], row=row, bg="2E75B6")
-    row += 1
-    for forn in resumo.get("fornecedores", []):
-        ws.cell(row=row, column=1, value=forn.get("nome", "")).font = _body_font()
-        ws.cell(row=row, column=1).border = _border()
-        ws.cell(row=row, column=2, value=forn.get("quantidade_itens", 0)).font = _body_font()
-        ws.cell(row=row, column=2).alignment = Alignment(horizontal="center")
-        ws.cell(row=row, column=2).border = _border()
-        if row % 2 == 0:
-            ws.cell(row=row, column=1).fill = _solid(COL_ALT_ROW)
-            ws.cell(row=row, column=2).fill = _solid(COL_ALT_ROW)
-        row += 1
+        cb = ws.cell(row=row, column=2, value=str(valor))
+        cb.font      = _font(size=9)
+        cb.alignment = _align(h="left", v="center")
+        cb.border    = _border()
+        _row_height(ws, row, 18 if campo != "Observações gerais" else 40)
 
-    # Status
-    row += 1
-    ws.cell(row=row, column=1, value="STATUS DOS ITENS").font = Font(name="Calibri", bold=True, size=10, color=COL_HEADER_FG)
-    ws.cell(row=row, column=1).fill = _solid(COL_SECTION_BG)
-    ws.cell(row=row, column=2).fill = _solid(COL_SECTION_BG)
-    ws.merge_cells(f"A{row}:B{row}")
-    row += 1
-    _apply_header_row(ws, ["Status", "Qtd."], row=row, bg="2E75B6")
-    row += 1
+    # ── Resumo D–F (Tipo / Chave / Quantidade) ────────────────────────────────
+    # Header row 2
+    for col, label in [(4, "Tipo de resumo"), (5, "Chave"), (6, "Quantidade")]:
+        _hdr_cell(ws, 2, col, label, bg=_BLU, size=9)
+
+    right_rows = []
+    for s in resumo.get("secoes", []):
+        right_rows.append(("Quantidade por seção", s.get("nome", ""), s.get("quantidade_itens", 0)))
+    for f in resumo.get("fornecedores", []):
+        right_rows.append(("Quantidade por fornecedor", f.get("nome", ""), f.get("quantidade_itens", 0)))
     for st in resumo.get("status_summary", []):
-        ws.cell(row=row, column=1, value=st.get("status", "")).font = _body_font()
-        ws.cell(row=row, column=1).border = _border()
-        ws.cell(row=row, column=2, value=st.get("quantidade", 0)).font = _body_font()
-        ws.cell(row=row, column=2).alignment = Alignment(horizontal="center")
-        ws.cell(row=row, column=2).border = _border()
-        row += 1
+        right_rows.append(("Quantidade por status de compra/locação",
+                           st.get("status", ""), st.get("quantidade", 0)))
 
-    _set_col_widths(ws, {1: 35, 2: 55, 3: 20, 4: 20})
+    for i, (tipo, chave, qtd) in enumerate(right_rows):
+        row = i + 3
+        bg  = _GRAY if i % 2 == 0 else None
+        _data_cell(ws, row, 4, tipo,  bg=bg, h="left")
+        _data_cell(ws, row, 5, chave, bg=bg, h="left")
+        _data_cell(ws, row, 6, qtd,   bg=bg, h="center")
+        _row_height(ws, row, 16)
+
+    _set_widths(ws, {1: 36, 2: 55, 3: 3, 4: 32, 5: 38, 6: 14})
 
 
-# ── Sheet: Itens Detalhados ───────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. ITENS DETALHADOS  (A-AB, 28 colunas — idêntico à referência)
+# ─────────────────────────────────────────────────────────────────────────────
+
 ITENS_HEADERS = [
-    "ID", "Página/Slide", "Seção", "Sub-seção/Ambiente",
-    "Fornecedor", "Categoria", "Item", "Descrição Detalhada",
-    "Qtd.", "Unid.", "Medida Original",
+    "ID", "Página/Slide de origem", "Seção", "Sub-seção / Ambiente",
+    "Fornecedor", "Categoria", "Item", "Descrição detalhada",
+    "Quantidade", "Unidade", "Medida original",
     "Largura", "Altura", "Profundidade", "Comprimento", "Espessura",
-    "Área", "Metro Linear",
-    "Material", "Acabamento/Cor", "Tipo Produção",
-    "Status Arte", "Status Compra/Locação",
-    "Responsável/Área", "Observações Técnicas",
-    "Pendência/Ação", "Nível Atenção", "Fonte Informação",
+    "Área", "Metro linear",
+    "Material", "Acabamento / Cor", "Tipo de produção",
+    "Status da arte", "Status da compra/locação",
+    "Responsável / área", "Observações técnicas",
+    "Pendência / ação necessária", "Nível de atenção", "Fonte da informação",
 ]
 
 ITENS_FIELDS = [
@@ -213,304 +213,513 @@ ITENS_FIELDS = [
     "pendencia_acao_necessaria", "nivel_atencao", "fonte_informacao",
 ]
 
+# Column widths matching reference (A=10 … AB=42)
 ITENS_WIDTHS = {
-    1: 8, 2: 12, 3: 22, 4: 22,
-    5: 18, 6: 16, 7: 28, 8: 45,
-    9: 7, 10: 7, 11: 20,
-    12: 9, 13: 9, 14: 12, 15: 13, 16: 11,
-    17: 9, 18: 12,
-    19: 20, 20: 20, 21: 16,
-    22: 16, 23: 18,
-    24: 18, 25: 40,
-    26: 35, 27: 13, 28: 20,
+    1:10,  2:28,  3:22,  4:26,  5:24,  6:24,  7:35,  8:48,
+    9:12, 10:13, 11:24, 12:11, 13:11, 14:14, 15:14, 16:12,
+   17:12, 18:14, 19:24, 20:24, 21:24, 22:24, 23:28, 24:24,
+   25:42, 26:42, 27:16, 28:42,
 }
 
-NIVEL_COLORS = {
-    "alto":  COL_ALTO,
-    "médio": COL_MEDIO,
-    "medio": COL_MEDIO,
-    "baixo": COL_BAIXO,
-}
+_CENTER_COLS_ITENS = {1, 2, 9, 10, 12, 13, 14, 15, 16, 17, 18, 22, 23, 27}
 
 
 def _build_itens(ws, itens: list[dict]):
-    _apply_header_row(ws, ITENS_HEADERS, row=1, height=24)
+    # Header row
+    for col, label in enumerate(ITENS_HEADERS, start=1):
+        _hdr_cell(ws, 1, col, label, size=9)
+    _row_height(ws, 1, 26)
     _freeze(ws, "A2")
-    _set_col_widths(ws, ITENS_WIDTHS)
+    _set_widths(ws, ITENS_WIDTHS)
 
     for r_idx, item in enumerate(itens, start=2):
-        nivel = str(item.get("nivel_atencao", "")).strip().lower()
-        row_color = NIVEL_COLORS.get(nivel, None)
+        nivel    = str(item.get("nivel_atencao", "")).strip().lower()
+        row_bg   = NIVEL_ROW_FILL.get(nivel)
+        nivel_bg = NIVEL_FILL.get(nivel)
 
         for c_idx, field in enumerate(ITENS_FIELDS, start=1):
-            value = item.get(field, "")
-            cell = ws.cell(row=r_idx, column=c_idx, value=str(value) if value else "")
-            cell.font = _body_font()
-            cell.alignment = _wrap_align(
-                horizontal="center" if c_idx in (1, 2, 9, 10, 12, 13, 14, 15, 16, 17, 18, 22, 23, 27) else "left"
-            )
-            cell.border = _border()
+            val   = item.get(field, "") or ""
+            h_al  = "center" if c_idx in _CENTER_COLS_ITENS else "left"
+            bg    = row_bg if (row_bg and nivel in ("alto", "crítico", "critico")) else \
+                    (_ALT if r_idx % 2 == 0 else None)
+            _data_cell(ws, r_idx, c_idx, val, bg=bg, h=h_al)
 
-            if row_color and nivel in ("alto",):
-                cell.fill = _solid("FFF0F0")
-            elif r_idx % 2 == 0 and not row_color:
-                cell.fill = _solid(COL_ALT_ROW)
+        # Colour the nivel_atencao cell itself
+        if nivel_bg:
+            cell = ws.cell(row=r_idx, column=27)
+            cell.fill = _solid(nivel_bg)
+            cell.font = Font(name="Calibri", bold=True, size=9)
 
-        # Highlight nivel_atencao cell itself
-        nivel_cell = ws.cell(row=r_idx, column=27)
-        if nivel in NIVEL_COLORS:
-            nivel_cell.fill = _solid(NIVEL_COLORS[nivel])
-            nivel_cell.font = Font(name="Calibri", bold=True, size=9, color="000000")
-
-        ws.row_dimensions[r_idx].height = 36
+        _row_height(ws, r_idx, 38)
 
     _autofilter(ws)
 
 
-# ── Sheet: Por Seção ──────────────────────────────────────────────────────────
-def _build_por_secao(ws, por_secao: list[dict]):
-    headers = ["Seção", "Descrição da Seção", "Páginas/Slides", "Qtd. Itens", "IDs dos Itens", "Observações"]
-    _apply_header_row(ws, headers, row=1, height=22)
-    _freeze(ws, "A2")
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. POR SEÇÃO  (linhas individuais por item, agrupadas por seção)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    for r_idx, secao in enumerate(por_secao, start=2):
-        ids = ", ".join(secao.get("ids_itens", []))
-        pages = ", ".join(str(p) for p in secao.get("paginas_slides", []))
+SECAO_HEADERS = [
+    "Seção", "Sub-seção / Ambiente", "ID", "Item",
+    "Categoria", "Fornecedor", "Quantidade", "Unidade",
+    "Status da compra/locação", "Nível de atenção", "Pendência / ação necessária",
+]
+SECAO_WIDTHS = {1:26, 2:28, 3:10, 4:40, 5:26, 6:26, 7:10, 8:10, 9:30, 10:14, 11:45}
+
+
+def _build_por_secao(ws, itens: list[dict]):
+    for col, label in enumerate(SECAO_HEADERS, start=1):
+        _hdr_cell(ws, 1, col, label, size=9)
+    _row_height(ws, 1, 24)
+    _freeze(ws, "A2")
+    _set_widths(ws, SECAO_WIDTHS)
+
+    # Sort by seção then sub-seção
+    sorted_itens = sorted(itens, key=lambda x: (
+        x.get("secao", ""), x.get("sub_secao_ambiente", "")
+    ))
+
+    prev_sec = None
+    for r_idx, item in enumerate(sorted_itens, start=2):
+        sec      = item.get("secao", "")
+        sub      = item.get("sub_secao_ambiente", "")
+        nivel    = str(item.get("nivel_atencao", "")).strip().lower()
+        nivel_bg = NIVEL_FILL.get(nivel)
+
+        # Section header stripe
+        is_new_sec = sec != prev_sec
+        row_bg     = _ALT if r_idx % 2 == 0 else None
 
         values = [
-            secao.get("secao", ""),
-            secao.get("descricao_secao", ""),
-            pages,
-            len(secao.get("ids_itens", [])),
-            ids,
-            secao.get("observacoes", ""),
+            sec,
+            sub,
+            item.get("id", ""),
+            item.get("item", ""),
+            item.get("categoria", ""),
+            item.get("fornecedor", ""),
+            item.get("quantidade", ""),
+            item.get("unidade", ""),
+            item.get("status_compra_locacao", ""),
+            item.get("nivel_atencao", ""),
+            item.get("pendencia_acao_necessaria", ""),
         ]
-        for c_idx, value in enumerate(values, start=1):
-            cell = ws.cell(row=r_idx, column=c_idx, value=str(value) if value else "")
-            cell.font = _body_font()
-            cell.alignment = _wrap_align()
-            cell.border = _border()
-            if r_idx % 2 == 0:
-                cell.fill = _solid(COL_ALT_ROW)
+        _CENTER = {3, 7, 8, 10}
+        for c_idx, val in enumerate(values, start=1):
+            h_al = "center" if c_idx in _CENTER else "left"
+            bold = c_idx == 1 and is_new_sec
+            _data_cell(ws, r_idx, c_idx, val, bg=row_bg, h=h_al, bold=bold)
 
-        # Alternate header color per section
-        ws.cell(row=r_idx, column=1).font = Font(name="Calibri", bold=True, size=9, color="1F3864")
-        ws.row_dimensions[r_idx].height = 28
+        if nivel_bg:
+            cell = ws.cell(row=r_idx, column=10)
+            cell.fill = _solid(nivel_bg)
+            cell.font = Font(name="Calibri", bold=True, size=9)
 
-    _set_col_widths(ws, {1: 28, 2: 45, 3: 22, 4: 10, 5: 50, 6: 40})
+        if is_new_sec:
+            for c in range(1, len(SECAO_HEADERS) + 1):
+                ws.cell(row=r_idx, column=c).fill = _solid("D6E4F0")
+                ws.cell(row=r_idx, column=c).font = Font(name="Calibri", bold=True, size=9)
+
+        _row_height(ws, r_idx, 28)
+        prev_sec = sec
+
     _autofilter(ws)
 
 
-# ── Sheet: Medições ───────────────────────────────────────────────────────────
-def _build_medicoes(ws, medicoes: list[dict]):
-    headers = [
-        "Item", "ID Item", "Página/Slide",
-        "Medida Original", "Unidade Original",
-        "Medida em Metros", "Tipo de Medida",
-        "Confiabilidade", "Observação",
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. MEDIÇÕES  (uma linha por dimensão)
+# ─────────────────────────────────────────────────────────────────────────────
+
+MED_HEADERS = [
+    "ID", "Item", "Página",
+    "Medida original", "Unidade original",
+    "Medida convertida para metros",
+    "Tipo de medida",
+    "Observação sobre confiabilidade da leitura",
+    "Fonte da informação",
+]
+MED_WIDTHS = {1:10, 2:38, 3:20, 4:22, 5:14, 6:18, 7:20, 8:44, 9:40}
+
+_CONF_FILL = {"alta": _BAIXO, "alta - medida textual no arquivo": _BAIXO,
+              "média": _MEDIO, "media": _MEDIO, "baixa": _ALTO}
+
+
+def _expand_medicoes(itens: list[dict]) -> list[dict]:
+    """Expand each item with measurements into one row per dimension."""
+    rows = []
+    dim_fields = [
+        ("largura",      "largura"),
+        ("altura",       "altura"),
+        ("profundidade", "profundidade"),
+        ("comprimento",  "comprimento"),
+        ("espessura",    "espessura"),
+        ("area",         "área"),
+        ("metro_linear", "metro linear"),
     ]
-    fields = [
-        "item", "id_item", "pagina_slide",
-        "medida_original", "unidade_original",
-        "medida_metros", "tipo_medida",
-        "confiabilidade", "observacao_confiabilidade",
-    ]
-    _apply_header_row(ws, headers, row=1, height=22)
+    for item in itens:
+        med_orig = (item.get("medida_original") or "").strip()
+        if not med_orig:
+            continue
+        fonte = item.get("fonte_informacao", "")
+        page  = item.get("pagina_slide_origem", "")
+
+        # Unit from medida_original
+        u_m = re.search(r'(cm|mm|m\b)', med_orig, re.IGNORECASE)
+        unit = u_m.group(1) if u_m else ""
+
+        added = False
+        for field, tipo in dim_fields:
+            val = (item.get(field) or "").strip()
+            if not val:
+                continue
+            # Convert to meters
+            try:
+                v_f  = float(val.replace(",", "."))
+                u_low = unit.lower()
+                if u_low == "cm":
+                    metros = f"{v_f/100:.3f}"
+                elif u_low == "mm":
+                    metros = f"{v_f/1000:.4f}"
+                else:
+                    metros = f"{v_f:.3f}"
+            except ValueError:
+                metros = "A confirmar"
+
+            rows.append({
+                "id_item":      item.get("id", ""),
+                "item":         item.get("item", ""),
+                "pagina":       page,
+                "medida_orig":  med_orig,
+                "unidade_orig": unit,
+                "metros":       metros,
+                "tipo":         tipo,
+                "confiab":      "Alta - medida textual no arquivo",
+                "fonte":        fonte,
+            })
+            added = True
+
+        # If no individual dimensions, emit one raw row
+        if not added:
+            rows.append({
+                "id_item":      item.get("id", ""),
+                "item":         item.get("item", ""),
+                "pagina":       page,
+                "medida_orig":  med_orig,
+                "unidade_orig": unit,
+                "metros":       "A confirmar",
+                "tipo":         "medida",
+                "confiab":      "Média",
+                "fonte":        fonte,
+            })
+    return rows
+
+
+def _build_medicoes(ws, itens: list[dict]):
+    for col, label in enumerate(MED_HEADERS, start=1):
+        _hdr_cell(ws, 1, col, label, size=9)
+    _row_height(ws, 1, 24)
     _freeze(ws, "A2")
+    _set_widths(ws, MED_WIDTHS)
 
-    CONF_COLORS = {"alta": COL_BAIXO, "média": COL_MEDIO, "media": COL_MEDIO, "baixa": COL_ALTO}
+    rows = _expand_medicoes(itens)
 
-    for r_idx, med in enumerate(medicoes, start=2):
-        for c_idx, field in enumerate(fields, start=1):
-            value = med.get(field, "")
-            cell = ws.cell(row=r_idx, column=c_idx, value=str(value) if value else "")
-            cell.font = _body_font()
-            cell.alignment = _wrap_align(horizontal="center" if c_idx in (2, 3, 5, 6, 7, 8) else "left")
-            cell.border = _border()
-            if r_idx % 2 == 0:
-                cell.fill = _solid(COL_ALT_ROW)
+    for r_idx, row in enumerate(rows, start=2):
+        conf_key = row["confiab"].lower()
+        conf_bg  = _CONF_FILL.get(conf_key) or _CONF_FILL.get("média")
+        alt_bg   = _ALT if r_idx % 2 == 0 else None
 
-        conf_val = str(med.get("confiabilidade", "")).strip().lower()
-        conf_cell = ws.cell(row=r_idx, column=8)
-        if conf_val in CONF_COLORS:
-            conf_cell.fill = _solid(CONF_COLORS[conf_val])
-            conf_cell.font = Font(name="Calibri", bold=True, size=9)
+        values = [
+            row["id_item"], row["item"], row["pagina"],
+            row["medida_orig"], row["unidade_orig"],
+            row["metros"], row["tipo"], row["confiab"], row["fonte"],
+        ]
+        _CENTER = {1, 3, 5, 6, 7}
+        for c_idx, val in enumerate(values, start=1):
+            h = "center" if c_idx in _CENTER else "left"
+            _data_cell(ws, r_idx, c_idx, val, bg=alt_bg, h=h)
 
-        ws.row_dimensions[r_idx].height = 22
+        # Colour confiabilidade cell
+        ws.cell(row=r_idx, column=8).fill = _solid(conf_bg)
+        ws.cell(row=r_idx, column=8).font = Font(name="Calibri", bold=True, size=9)
 
-    _set_col_widths(ws, {1: 35, 2: 10, 3: 14, 4: 20, 5: 14, 6: 16, 7: 16, 8: 14, 9: 40})
+        _row_height(ws, r_idx, 20)
+
     _autofilter(ws)
 
 
-# ── Sheet: Pendências ─────────────────────────────────────────────────────────
-def _build_pendencias(ws, pendencias: list[dict]):
-    headers = [
-        "ID Item", "Item", "Página/Slide", "Seção",
-        "Descrição da Pendência", "Tipo de Pendência",
-        "Nível de Urgência", "Responsável", "Prazo",
-    ]
-    fields = [
-        "id_item", "item", "pagina_slide", "secao",
-        "descricao_pendencia", "tipo_pendencia",
-        "nivel_urgencia", "responsavel", "prazo",
-    ]
-    _apply_header_row(ws, headers, row=1, height=22)
-    _freeze(ws, "A2")
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. PENDÊNCIAS
+# ─────────────────────────────────────────────────────────────────────────────
 
-    URG_COLORS = {
-        "crítico": "C0392B", "critico": "C0392B",
-        "alto": COL_ALTO,
-        "médio": COL_MEDIO, "medio": COL_MEDIO,
-        "baixo": COL_BAIXO,
-    }
+PEND_HEADERS = [
+    "ID", "Página/Slide", "Seção", "Sub-seção / Ambiente", "Item",
+    "Pendência / ação necessária",
+    "Status da arte", "Status da compra/locação",
+    "Nível de atenção", "Fonte da informação",
+]
+PEND_WIDTHS = {1:10, 2:24, 3:24, 4:26, 5:38, 6:50, 7:24, 8:28, 9:14, 10:40}
+
+
+def _build_pendencias(ws, pendencias: list[dict], item_lookup: dict):
+    for col, label in enumerate(PEND_HEADERS, start=1):
+        _hdr_cell(ws, 1, col, label, size=9)
+    _row_height(ws, 1, 24)
+    _freeze(ws, "A2")
+    _set_widths(ws, PEND_WIDTHS)
 
     for r_idx, pend in enumerate(pendencias, start=2):
-        urgencia = str(pend.get("nivel_urgencia", "")).strip().lower()
-        bg = URG_COLORS.get(urgencia, None)
+        item_id  = pend.get("id_item", "")
+        item_obj = item_lookup.get(item_id, {})
+        nivel    = str(pend.get("nivel_urgencia", "")).strip().lower()
+        nivel_bg = NIVEL_FILL.get(nivel)
+        alt_bg   = _ALT if r_idx % 2 == 0 else None
 
-        for c_idx, field in enumerate(fields, start=1):
-            value = pend.get(field, "")
-            cell = ws.cell(row=r_idx, column=c_idx, value=str(value) if value else "")
-            cell.font = _body_font()
-            cell.alignment = _wrap_align(horizontal="center" if c_idx in (1, 3, 7) else "left")
-            cell.border = _border()
-            if bg and urgencia in ("crítico", "critico"):
-                cell.fill = _solid("FFF5F5")
-            elif r_idx % 2 == 0 and not bg:
-                cell.fill = _solid(COL_ALT_ROW)
+        values = [
+            item_id,
+            pend.get("pagina_slide", ""),
+            pend.get("secao", ""),
+            item_obj.get("sub_secao_ambiente", ""),
+            pend.get("item", ""),
+            pend.get("descricao_pendencia", ""),
+            item_obj.get("status_arte", ""),
+            item_obj.get("status_compra_locacao", ""),
+            pend.get("nivel_urgencia", ""),
+            item_obj.get("fonte_informacao", ""),
+        ]
+        _CENTER = {1, 2, 9}
+        for c_idx, val in enumerate(values, start=1):
+            h = "center" if c_idx in _CENTER else "left"
+            _data_cell(ws, r_idx, c_idx, val,
+                       bg=("FFF5F5" if nivel in ("crítico","critico","alto") else alt_bg),
+                       h=h)
 
-        urg_cell = ws.cell(row=r_idx, column=7)
-        if urgencia in URG_COLORS:
-            urg_cell.fill = _solid(URG_COLORS[urgencia])
-            urg_cell.font = Font(name="Calibri", bold=True, size=9,
-                                 color="FFFFFF" if urgencia in ("crítico", "critico") else "000000")
+        if nivel_bg:
+            cell = ws.cell(row=r_idx, column=9)
+            cell.fill = _solid(nivel_bg)
+            cell.font = Font(name="Calibri", bold=True, size=9,
+                             color=_WHITE if nivel in ("crítico","critico") else "000000")
 
-        ws.row_dimensions[r_idx].height = 30
+        _row_height(ws, r_idx, 30)
 
-    _set_col_widths(ws, {1: 10, 2: 35, 3: 12, 4: 22, 5: 50, 6: 22, 7: 14, 8: 20, 9: 15})
     _autofilter(ws)
 
 
-# ── Sheet: Legenda/Status ─────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. LEGENDA / STATUS
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _build_legenda(ws, legenda: list[dict]):
     ws.sheet_view.showGridLines = False
 
     ws.merge_cells("A1:E1")
-    title = ws["A1"]
-    title.value = "LEGENDA DE CORES E STATUS"
-    title.font = Font(name="Calibri", bold=True, size=13, color=COL_HEADER_FG)
-    title.fill = _solid(COL_HEADER_BG)
-    title.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 28
+    t = ws["A1"]
+    t.value = "LEGENDA DE CORES E STATUS"
+    t.font  = Font(name="Calibri", bold=True, size=13, color=_WHITE)
+    t.fill  = _solid(_NAV)
+    t.alignment = Alignment(horizontal="center", vertical="center")
+    _row_height(ws, 1, 30)
 
-    headers = ["Cor / Hex", "Amostra", "Significado", "Fornecedor", "Status Relacionado", "Observações"]
-    _apply_header_row(ws, headers, row=2, height=20)
+    for col, label in enumerate(["Cor", "Significado", "Fornecedor", "Status relacionado", "Observações"], start=1):
+        _hdr_cell(ws, 2, col, label, bg=_BLU, size=9)
 
+    # Custom legenda from file
     for r_idx, leg in enumerate(legenda, start=3):
-        hex_color = leg.get("cor_hex", "").replace("#", "").strip()
-
-        ws.cell(row=r_idx, column=1, value=f"#{hex_color}" if hex_color else "Não informado")
-        ws.cell(row=r_idx, column=1).font = _body_font()
-        ws.cell(row=r_idx, column=1).border = _border()
-
-        # Color sample cell
-        sample_cell = ws.cell(row=r_idx, column=2, value="")
-        if hex_color and len(hex_color) == 6:
+        hex_c = (leg.get("cor_hex") or "").replace("#", "").strip()
+        _data_cell(ws, r_idx, 1, f"#{hex_c}" if hex_c else leg.get("cor_hex", "Não informado"))
+        sample = ws.cell(row=r_idx, column=2, value="")
+        if hex_c and len(hex_c) == 6:
             try:
-                sample_cell.fill = _solid(hex_color)
+                sample.fill = _solid(hex_c)
             except Exception:
                 pass
-        sample_cell.border = _border()
-
+        sample.border = _border()
         for c_idx, key in enumerate(["significado", "fornecedor", "status_relacionado", "observacoes"], start=3):
-            cell = ws.cell(row=r_idx, column=c_idx, value=str(leg.get(key, "")))
-            cell.font = _body_font()
-            cell.alignment = _wrap_align()
-            cell.border = _border()
-            if r_idx % 2 == 0:
-                cell.fill = _solid(COL_ALT_ROW)
+            _data_cell(ws, r_idx, c_idx, leg.get(key, ""))
+        _row_height(ws, r_idx, 20)
 
-        ws.row_dimensions[r_idx].height = 22
-
-    # Built-in legend for nivel_atencao
-    row = len(legenda) + 5
-    ws.merge_cells(f"A{row}:F{row}")
-    label = ws.cell(row=row, column=1, value="LEGENDA INTERNA — NÍVEL DE ATENÇÃO / URGÊNCIA")
-    label.font = Font(name="Calibri", bold=True, size=10, color=COL_HEADER_FG)
-    label.fill = _solid(COL_SECTION_BG)
-    label.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[row].height = 20
-    row += 1
+    # Built-in legend
+    sep_row = len(legenda) + 4
+    ws.merge_cells(f"A{sep_row}:E{sep_row}")
+    t2 = ws[f"A{sep_row}"]
+    t2.value = "LEGENDA INTERNA — NÍVEL DE ATENÇÃO"
+    t2.font  = Font(name="Calibri", bold=True, size=10, color=_WHITE)
+    t2.fill  = _solid(_BLU)
+    t2.alignment = Alignment(horizontal="center", vertical="center")
+    _row_height(ws, sep_row, 22)
 
     built_in = [
-        (COL_BAIXO,  "Baixo / Alta confiabilidade",   "Verde",  "Item sem pendências relevantes"),
-        (COL_MEDIO,  "Médio / Média confiabilidade",   "Amarelo", "Item com pendências controladas"),
-        (COL_ALTO,   "Alto / Baixa confiabilidade",    "Vermelho", "Item crítico ou pendência grave"),
-        ("C0392B",   "Crítico",                        "Vermelho escuro", "Pendência bloqueante ou urgente"),
+        ("Verde claro",         _BAIXO, "Baixo",           "Todos", "Sem alerta relevante."),
+        ("Amarelo claro",       _MEDIO, "Médio",            "Todos", "Requer ação antes da compra/produção."),
+        ("Vermelho claro",      _ALTO,  "Alto",             "Todos", "Verificar, definir, conferir ou medida aproximada."),
+        ("Vermelho escuro",     _CRIT,  "Crítico",          "Todos", "Pendência bloqueante ou urgente."),
+        ("Azul claro",          "9DC3E6","Locação necessária","Fornecedor de locação","Item indica locação."),
     ]
-    for hex_c, nivel, cor_nome, obs in built_in:
-        ws.cell(row=row, column=1, value=f"#{hex_c}").font = _body_font()
-        ws.cell(row=row, column=1).border = _border()
-        ws.cell(row=row, column=2).fill = _solid(hex_c)
+    for i, (cor_nome, hex_c, nivel, forn, obs) in enumerate(built_in):
+        row = sep_row + 1 + i
+        _data_cell(ws, row, 1, cor_nome)
+        ws.cell(row=row, column=2).fill   = _solid(hex_c)
         ws.cell(row=row, column=2).border = _border()
-        ws.cell(row=row, column=3, value=nivel).font = _body_font(bold=True)
-        ws.cell(row=row, column=3).border = _border()
-        ws.cell(row=row, column=4, value=cor_nome).font = _body_font()
-        ws.cell(row=row, column=4).border = _border()
-        ws.cell(row=row, column=5, value=obs).font = _body_font()
-        ws.cell(row=row, column=5).border = _border()
-        ws.cell(row=row, column=5).alignment = _wrap_align()
-        ws.row_dimensions[row].height = 20
-        row += 1
+        _data_cell(ws, row, 3, nivel, bold=True)
+        _data_cell(ws, row, 4, forn)
+        _data_cell(ws, row, 5, obs)
+        _row_height(ws, row, 20)
 
-    _set_col_widths(ws, {1: 14, 2: 10, 3: 30, 4: 25, 5: 28, 6: 40})
+    _set_widths(ws, {1:16, 2:10, 3:32, 4:26, 5:46})
 
 
-# ── Main builder ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. ABA POR FORNECEDOR
+# ─────────────────────────────────────────────────────────────────────────────
+
+FORN_HEADERS = [
+    "ID", "Seção", "Sub-seção / Ambiente", "Item", "Descrição detalhada",
+    "Quantidade", "Unidade",
+    "Medida original", "Largura", "Altura", "Profundidade",
+    "Material", "Acabamento / Cor", "Tipo de produção",
+    "Status da arte", "Status da compra/locação",
+    "Observações técnicas", "Pendência / ação necessária", "Nível de atenção",
+]
+FORN_FIELDS = [
+    "id", "secao", "sub_secao_ambiente", "item", "descricao_detalhada",
+    "quantidade", "unidade",
+    "medida_original", "largura", "altura", "profundidade",
+    "material", "acabamento_cor", "tipo_producao",
+    "status_arte", "status_compra_locacao",
+    "observacoes_tecnicas", "pendencia_acao_necessaria", "nivel_atencao",
+]
+FORN_WIDTHS = {
+    1:10, 2:22, 3:24, 4:38, 5:44,
+    6:10, 7:10,
+    8:22, 9:10, 10:10, 11:13,
+    12:22, 13:22, 14:22,
+    15:22, 16:26,
+    17:38, 18:38, 19:13,
+}
+_CENTER_FORN = {1, 6, 7, 9, 10, 11, 19}
+
+# Rotating palette for supplier tab colours
+_TAB_COLORS = [
+    "4472C4", "ED7D31", "A9D18E", "FF0000", "FFC000",
+    "5B9BD5", "70AD47", "FF7070", "C55A11", "7030A0",
+    "00B050", "9E480E", "833C00", "375623", "843C0C",
+]
+
+
+def _sanitize_tab(name: str) -> str:
+    """Return a valid Excel sheet-tab name (max 31 chars, no special chars)."""
+    cleaned = re.sub(r'[\/\\\[\]\?\*:]', '-', name)
+    return cleaned[:31].strip()
+
+
+def _build_fornecedor_sheet(ws, fornecedor: str, itens: list[dict], tab_color: str):
+    ws.sheet_view.showGridLines = False
+
+    # Title
+    n_cols = len(FORN_HEADERS)
+    ws.merge_cells(f"A1:{get_column_letter(n_cols)}1")
+    t = ws["A1"]
+    t.value = f"FORNECEDOR: {fornecedor.upper()}"
+    t.font  = Font(name="Calibri", bold=True, size=12, color=_WHITE)
+    t.fill  = _solid(tab_color)
+    t.alignment = Alignment(horizontal="center", vertical="center")
+    _row_height(ws, 1, 28)
+
+    # Sub-header counts
+    ws.merge_cells(f"A2:{get_column_letter(n_cols)}2")
+    sub = ws["A2"]
+    sub.value = f"{len(itens)} item(s) · Fornecedor: {fornecedor}"
+    sub.font  = Font(name="Calibri", size=9, color="444444")
+    sub.alignment = Alignment(horizontal="left", vertical="center")
+    sub.fill  = _solid(_GRAY)
+    _row_height(ws, 2, 16)
+
+    # Headers row 3
+    for col, label in enumerate(FORN_HEADERS, start=1):
+        _hdr_cell(ws, 3, col, label, bg=tab_color, size=9)
+    _row_height(ws, 3, 24)
+
+    _freeze(ws, "A4")
+    _set_widths(ws, FORN_WIDTHS)
+
+    for r_idx, item in enumerate(itens, start=4):
+        nivel    = str(item.get("nivel_atencao", "")).strip().lower()
+        nivel_bg = NIVEL_FILL.get(nivel)
+        alt_bg   = _ALT if r_idx % 2 == 0 else None
+
+        for c_idx, field in enumerate(FORN_FIELDS, start=1):
+            val   = item.get(field, "") or ""
+            h_al  = "center" if c_idx in _CENTER_FORN else "left"
+            _data_cell(ws, r_idx, c_idx, val, bg=alt_bg, h=h_al)
+
+        if nivel_bg:
+            cell = ws.cell(row=r_idx, column=19)
+            cell.fill = _solid(nivel_bg)
+            cell.font = Font(name="Calibri", bold=True, size=9)
+
+        _row_height(ws, r_idx, 32)
+
+    ws.auto_filter.ref = f"A3:{get_column_letter(n_cols)}{3 + len(itens)}"
+    ws.sheet_properties.tabColor = tab_color
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main builder
+# ─────────────────────────────────────────────────────────────────────────────
+
 def generate_excel(data: dict, filename: str) -> bytes:
     """
     Build the full Excel workbook from analyzed data and return as bytes.
 
-    data: output dict from claude_analyzer.analyze_document()
-    filename: original uploaded filename (for display in Resumo)
+    data:     output dict from local_analyzer.analyze_document()
+    filename: original uploaded filename (displayed in Resumo)
     """
     wb = Workbook()
+    wb.remove(wb.active)  # remove default sheet
 
-    # Remove default sheet
-    default_ws = wb.active
-    wb.remove(default_ws)
+    itens     = data.get("itens_detalhados", [])
+    pendencias= data.get("pendencias", [])
 
-    # 1. Resumo
-    ws_resumo = wb.create_sheet("Resumo")
-    _build_resumo(ws_resumo, data.get("resumo", {}), filename)
+    # Lookup dict: item id → item
+    item_lookup = {it.get("id", ""): it for it in itens}
 
-    # 2. Itens Detalhados
-    ws_itens = wb.create_sheet("Itens Detalhados")
-    _build_itens(ws_itens, data.get("itens_detalhados", []))
+    # ── Fixed sheets ──────────────────────────────────────────────────────────
+    ws1 = wb.create_sheet("Resumo");            _build_resumo(ws1, data, filename)
+    ws2 = wb.create_sheet("Itens Detalhados");  _build_itens(ws2, itens)
+    ws3 = wb.create_sheet("Por Seção");         _build_por_secao(ws3, itens)
+    ws4 = wb.create_sheet("Medições");          _build_medicoes(ws4, itens)
+    ws5 = wb.create_sheet("Pendências");        _build_pendencias(ws5, pendencias, item_lookup)
+    ws6 = wb.create_sheet("Legenda e Status");  _build_legenda(ws6, data.get("legenda_status", []))
 
-    # 3. Por Seção
-    ws_secao = wb.create_sheet("Por Seção")
-    _build_por_secao(ws_secao, data.get("por_secao", []))
+    # Tab colours for fixed sheets
+    ws1.sheet_properties.tabColor = _NAV
+    ws2.sheet_properties.tabColor = "2E75B6"
+    ws3.sheet_properties.tabColor = "4472C4"
+    ws4.sheet_properties.tabColor = "70AD47"
+    ws5.sheet_properties.tabColor = "FF6B6B"
+    ws6.sheet_properties.tabColor = "FFC000"
 
-    # 4. Medições
-    ws_med = wb.create_sheet("Medições")
-    _build_medicoes(ws_med, data.get("medicoes", []))
+    # ── Supplier sheets (at the end) ──────────────────────────────────────────
+    # Group items by supplier, skip "Não informado"
+    suppliers: dict[str, list[dict]] = {}
+    no_supplier: list[dict] = []
 
-    # 5. Pendências
-    ws_pend = wb.create_sheet("Pendências")
-    _build_pendencias(ws_pend, data.get("pendencias", []))
+    for item in itens:
+        forn = (item.get("fornecedor") or "").strip()
+        if not forn or forn.lower() in ("não informado", "nao informado", "a confirmar", ""):
+            no_supplier.append(item)
+        else:
+            suppliers.setdefault(forn, []).append(item)
 
-    # 6. Legenda / Status
-    ws_leg = wb.create_sheet("Legenda e Status")
-    _build_legenda(ws_leg, data.get("legenda_status", []))
+    # Sort suppliers alphabetically
+    for forn_idx, (forn_name, forn_items) in enumerate(sorted(suppliers.items())):
+        tab_color = _TAB_COLORS[forn_idx % len(_TAB_COLORS)]
+        tab_name  = _sanitize_tab(forn_name)
+        ws_forn   = wb.create_sheet(tab_name)
+        _build_fornecedor_sheet(ws_forn, forn_name, forn_items, tab_color)
 
-    # Tab colors
-    ws_resumo.sheet_properties.tabColor    = "1F3864"
-    ws_itens.sheet_properties.tabColor     = "2E75B6"
-    ws_secao.sheet_properties.tabColor     = "4472C4"
-    ws_med.sheet_properties.tabColor       = "70AD47"
-    ws_pend.sheet_properties.tabColor      = "FF6B6B"
-    ws_leg.sheet_properties.tabColor       = "FFC000"
+    # "Sem Fornecedor" tab if there are unassigned items
+    if no_supplier:
+        ws_no = wb.create_sheet("Sem Fornecedor")
+        _build_fornecedor_sheet(ws_no, "Sem Fornecedor / A Definir", no_supplier, "808080")
 
     buf = io.BytesIO()
     wb.save(buf)
