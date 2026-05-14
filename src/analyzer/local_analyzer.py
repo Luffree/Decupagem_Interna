@@ -299,7 +299,7 @@ class _DocumentAnalyzer:
                 'pagina_slide_origem':      page_num,
                 'secao':                    section,
                 'sub_secao_ambiente':       current_sub,
-                'fornecedor':               'Não informado',
+                'fornecedor':               detected.get('fornecedor', 'Não informado'),
                 'categoria':                detected.get('categoria', 'A confirmar'),
                 'item':                     item_text[:120],
                 'descricao_detalhada':      item_text,
@@ -373,6 +373,14 @@ class _DocumentAnalyzer:
     def _classify(self, text: str) -> dict:
         tl = _norm(text)
         result: dict = {}
+
+        # Supplier — look for explicit "Fornecedor: X" / "exec.: X" patterns
+        forn_m = re.search(
+            r'(?:fornecedor|exec\.?|executante|responsável|empresa)\s*[:\-]\s*([^|\n,;—]{3,50})',
+            text, re.IGNORECASE,
+        )
+        if forn_m:
+            result['fornecedor'] = forn_m.group(1).strip().rstrip('.')
 
         # Category
         for category, keywords in CATEGORY_MAP.items():
@@ -575,18 +583,23 @@ class _DocumentAnalyzer:
             pend = item.get('pendencia_acao_necessaria', '').strip()
             if not pend:
                 continue
-            nivel = item.get('nivel_atencao', 'Médio')
+            nivel    = item.get('nivel_atencao', 'Médio')
             urgencia = 'Alto' if nivel == 'Alto' else 'Médio'
             pendencias.append({
-                'id_item':           item['id'],
-                'item':              item['item'],
-                'pagina_slide':      item['pagina_slide_origem'],
-                'secao':             item['secao'],
-                'descricao_pendencia': pend,
-                'tipo_pendencia':    'A confirmar',
-                'nivel_urgencia':    urgencia,
-                'responsavel':       item.get('responsavel_area', 'Não informado'),
-                'prazo':             'Não informado',
+                'id_item':               item['id'],
+                'item':                  item['item'],
+                'pagina_slide':          item['pagina_slide_origem'],
+                'secao':                 item['secao'],
+                'sub_secao_ambiente':    item.get('sub_secao_ambiente', ''),
+                'descricao_pendencia':   pend,
+                'tipo_pendencia':        'A confirmar',
+                'nivel_urgencia':        urgencia,
+                'responsavel':           item.get('responsavel_area', 'Não informado'),
+                'prazo':                 'Não informado',
+                # enrichment used by excel_generator for the Pendências sheet
+                'status_arte':           item.get('status_arte', ''),
+                'status_compra_locacao': item.get('status_compra_locacao', ''),
+                'fonte_informacao':      item.get('fonte_informacao', ''),
             })
 
         # ── Contagens para resumo ─────────────────────────────────────────────
