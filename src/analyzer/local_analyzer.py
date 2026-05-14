@@ -119,12 +119,14 @@ class _DocumentAnalyzer:
             if notes:
                 self._parse_text(notes, page_num, section, 'Notas do slide')
 
-            # Shapes with text/color
+            # Shapes: only process when they carry a fill_color with semantic meaning.
+            # Text-only shapes are already covered by text_blocks; processing them
+            # again here would create duplicates.
             for sh in unit.get('shapes_summary', []):
-                sh_text = _clean_cell(sh.get('text', ''))
-                if len(sh_text) > 3:
-                    self._parse_shape(sh_text, page_num, section,
-                                      sh.get('fill_color', ''))
+                fill_color = (sh.get('fill_color') or '').strip()
+                sh_text    = _clean_cell(sh.get('text', ''))
+                if fill_color and len(fill_color) == 6 and len(sh_text) > 3:
+                    self._parse_shape(sh_text, page_num, section, fill_color)
 
             # PDF annotations
             for ann in unit.get('annotations', []):
@@ -458,10 +460,19 @@ class _DocumentAnalyzer:
 
     def _detect_pendencia(self, text: str) -> str:
         tl = _norm(text)
-        found = [kw for kw in PENDENCIA_KEYWORDS if kw in tl]
+        found = []
+        for kw in PENDENCIA_KEYWORDS:
+            # Short keywords (<=4 chars) must match at word boundaries to avoid
+            # false positives (e.g. "nd" matching inside "fundo").
+            if len(kw) <= 4:
+                if re.search(r'(?<!\w)' + re.escape(kw) + r'(?!\w)', tl):
+                    found.append(kw)
+            else:
+                if kw in tl:
+                    found.append(kw)
         if not found:
             return ''
-        return 'Verificar: ' + ', '.join(dict.fromkeys(found[:3]))  # max 3
+        return 'Verificar: ' + ', '.join(dict.fromkeys(found[:3]))
 
     def _detect_nivel(self, text: str, pendencia: str) -> str:
         if not pendencia:

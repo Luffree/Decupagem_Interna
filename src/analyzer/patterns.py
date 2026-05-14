@@ -207,8 +207,8 @@ PENDENCIA_KEYWORDS = [
     'falta definir', 'não aprovado', 'nao aprovado', 'não definido',
     'sem confirmação', 'sem confirmacao', 'indefinido', 'a resolver',
     'necessário confirmar', 'necessario confirmar', 'a providenciar',
-    'solicitar', 'falta', 'missing', 'tbd', 'n/d', 'nd',
-    'a validar', 'validar', 'aprovação pendente',
+    'solicitar', 'falta definir', 'não definido', 'nao definido',
+    'a validar', 'aprovação pendente',
     'arte não recebida', 'arte nao recebida',
 ]
 
